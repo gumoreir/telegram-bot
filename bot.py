@@ -13,11 +13,13 @@ from telegram.ext import (
 # =========================
 # CONFIG
 # =========================
-TOKEN = "8360307041:AAEkyfJGxeVD4ZIV_qRXrR-A4cPuO3CwDPE"
-ADMIN_ID = 5104231957
+# O token pode ser definido como variável de ambiente no Railway (recomendado)
+# ou diretamente aqui como fallback
+TOKEN = os.environ.get("BOT_TOKEN", "8360307041:AAEkyfJGxeVD4ZIV_qRXrR-A4cPuO3CwDPE")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "5104231957"))
 
-LINK_FERRAMENTA = "https://t.me/TEU_LINK_DA_FERRAMENTA"
-LINK_GRUPO_PRIVADO = "https://t.me/TEU_GRUPO_PRIVADO"
+LINK_FERRAMENTA = os.environ.get("LINK_FERRAMENTA", "https://t.me/TEU_LINK_DA_FERRAMENTA")
+LINK_GRUPO_PRIVADO = os.environ.get("LINK_GRUPO_PRIVADO", "https://t.me/TEU_GRUPO_PRIVADO")
 
 PARCERIAS = {
     "Lollyspins": "https://partners.meratrack.xyz/click?o=384&a=1049",
@@ -124,9 +126,6 @@ async def deposited_ready(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
-    # ----- BUG FIX #1 -----
-    # Se o utilizador carregou em "Já depositei" mas ainda não escolheu interesse,
-    # define um valor por defeito para não ficar bloqueado.
     if not context.user_data.get("interest"):
         context.user_data["interest"] = "AMBOS"
 
@@ -146,9 +145,6 @@ async def payout_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     method = q.data.replace("payout_", "")
     context.user_data["payout_method"] = method
-
-    # ----- BUG FIX #2 -----
-    # Limpa payout_value e awaiting_proof para garantir estado limpo
     context.user_data.pop("payout_value", None)
     context.user_data.pop("awaiting_proof", None)
 
@@ -191,13 +187,8 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # SUPORTE: RESPOSTA DO ADMIN (BIDIRECIONAL)
 # =========================
 async def admin_reply_to_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Se o ADMIN responder (reply) a uma mensagem de suporte, reenvia para o utilizador.
-    Este handler SÓ é chamado para mensagens do ADMIN.
-    """
     msg = update.message
     if not msg or not msg.reply_to_message:
-        # Admin enviou mensagem sem ser reply — ignora silenciosamente
         return
 
     support_map = context.application.bot_data.get("support_map", {})
@@ -205,7 +196,6 @@ async def admin_reply_to_support(update: Update, context: ContextTypes.DEFAULT_T
     user_id = support_map.get(original_admin_message_id)
 
     if not user_id:
-        # Não é uma mensagem de suporte rastreada — ignora
         return
 
     await context.bot.send_message(
@@ -220,13 +210,6 @@ async def admin_reply_to_support(update: Update, context: ContextTypes.DEFAULT_T
 # TEXTO GERAL (UTILIZADORES)
 # =========================
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Handler de texto para utilizadores normais (não-admin).
-    Ordem de prioridade:
-    1) Modo suporte ativo → encaminha para admin
-    2) À espera de payout_value → guarda número/wallet
-    3) Caso contrário → mensagem genérica
-    """
     text = (update.message.text or "").strip()
     user = update.effective_user
 
@@ -251,9 +234,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # 2) RECEBER DESTINO DO PAGAMENTO (MBWAY / USDC)
-    # ----- BUG FIX #3 -----
-    # Condição mais robusta: só entra aqui se tiver payout_method definido
-    # e payout_value ainda não estiver definido
     if context.user_data.get("payout_method") and "payout_value" not in context.user_data:
         if len(text) < 5:
             await update.message.reply_text("Envia um valor válido, por favor 🙂" + HELP_HINT)
@@ -284,9 +264,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # COMPROVATIVOS -> ADMIN
 # =========================
 async def receber_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ----- BUG FIX #4 -----
-    # Se não está em awaiting_proof mas tem payout_value, ainda aceita
-    # (protege contra estados inconsistentes)
     has_proof_state = (
         context.user_data.get("awaiting_proof") or
         context.user_data.get("payout_value")
@@ -307,7 +284,7 @@ async def receber_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=admin_decision_keyboard(user.id),
     )
 
-    context.user_data["awaiting_proof"] = False  # evita reenvio duplo
+    context.user_data["awaiting_proof"] = False
     await update.message.reply_text("✅ Comprovativo recebido. Aguarda validação. 🙌" + HELP_HINT)
 
 async def receber_documento(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -387,35 +364,26 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 def main():
     if not TOKEN:
-        raise RuntimeError("Define a variável de ambiente BOT_TOKEN com o token do teu bot.")
+        raise RuntimeError("BOT_TOKEN não definido.")
 
     app = Application.builder().token(TOKEN).build()
 
-    # Comandos
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("cancel", cancel_command))
 
-    # Callbacks de botões inline
     app.add_handler(CallbackQueryHandler(choose_interest,  pattern=r"^interest_(BACBO|AMBOS|DEVOLUCAO)$"))
     app.add_handler(CallbackQueryHandler(deposited_ready,  pattern=r"^deposited_ready$"))
     app.add_handler(CallbackQueryHandler(payout_choice,    pattern=r"^payout_(MBWAY|USDC)$"))
     app.add_handler(CallbackQueryHandler(admin_decision,   pattern=r"^admin_(approve|reject)_\d+$"))
 
-    # ----- BUG FIX #5 (PRINCIPAL) -----
-    # O handler do ADMIN deve filtrar apenas replies para não engolir texto normal do admin.
-    # Usando filters.REPLY garante que só interceta mensagens de resposta (reply),
-    # deixando o handle_text tratar os restantes casos do admin normalmente.
     app.add_handler(MessageHandler(
         filters.TEXT & filters.User(ADMIN_ID) & filters.REPLY,
         admin_reply_to_support
     ))
 
-    # Comprovativos (foto e documento)
     app.add_handler(MessageHandler(filters.PHOTO, receber_foto))
     app.add_handler(MessageHandler(filters.Document.ALL, receber_documento))
-
-    # Texto geral — utilizadores normais E admin sem reply
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     print("🤖 Bot a correr...")
